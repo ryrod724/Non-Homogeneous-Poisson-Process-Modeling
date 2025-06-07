@@ -1,3 +1,3 @@
-R codes and data sets for "Non-Homogeneous Poisson Process Modeling" link here
+Codes and datasets for an upcoming publication "Statistical Validation of Non-Homogeneous Poisson Processes via Time-Rescaling" in the Intelligence Planet Journal of Mathematics and Its Applications, Vol. 1, Issue 4. 
 
-Abstract here
+Expected Publication: July 2025. The remaining codes, datasets, and links will be available after publication.
