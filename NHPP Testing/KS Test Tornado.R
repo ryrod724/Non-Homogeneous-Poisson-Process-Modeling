@@ -32,7 +32,7 @@ eq.data <- eq.data[eq.data$elapsed.time > 1, ]
 # Create year-month variable
 eq.data$year.month <- format(as.Date(eq.data$datetime), "%Y-%m")
 
-# Number of earthquakes per month
+# Number of tornadoes per month
 freq.month <- data.frame(table(eq.data$year.month))
 year.month.unique <- freq.month[,1]
 neq.month <- freq.month[,2]
