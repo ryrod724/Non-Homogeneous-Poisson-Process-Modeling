@@ -5,7 +5,7 @@ library(dplyr)
 library(lubridate)
 
 # Load data
-eq.data <- read.csv("/Users/ryanrodrigue/Downloads/earthquakes.csv", header=TRUE, sep=",")
+eq.data <- read.csv("earthquakes.csv", header=TRUE, sep=",")
 eq.data$datetime <- as.POSIXct(eq.data$datetime, format="%Y-%m-%d %H:%M:%S")
 
 # Filter to October-December 2024 only (most recent 3 month period)
