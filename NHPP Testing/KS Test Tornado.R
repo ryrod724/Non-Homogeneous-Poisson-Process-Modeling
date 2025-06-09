@@ -6,124 +6,116 @@ library(lubridate)
 library(readr)
 
 # Load data
-eq.data <- read_csv("/Users/ryanrodrigue/Downloads/tnUS.csv") %>%
-filter(
-	st %in% c("OK", "TX", "KS", "NE"), #tornado alley
-    mo %in% 1:12, #all months
-    yr %in% c(2020)  # From 2020
-)
+eq.data <- read_csv("tnUS.csv") %>%
+  filter(
+    st %in% c("OK", "TX", "KS", "NE"),
+    mo %in% 1:12,
+    yr %in% c(2020)
+  )
 
 eq.data$datetime <- as.POSIXct(eq.data$datetime_utc, format="%Y-%m-%d %H:%M:%S")
 
-# Computing lag
+# Lag and interarrival filtering
 eq.data$datetime.lag <- c(0, head(eq.data$datetime, -1))
-
-# Remove first row
 eq.data <- eq.data[-1, ]
-
-# Interarrival times (hours)
 eq.data$elapsed.time <- (as.numeric(eq.data$datetime) - as.numeric(eq.data$datetime.lag)) / 3600
-
-# Remove duplicate sightings (within 1 hour)
 eq.data <- eq.data[eq.data$elapsed.time > 1, ]
 
-### MODEL lambda(t) ###
-
-# Create year-month variable
-eq.data$year.month <- format(as.Date(eq.data$datetime), "%Y-%m")
-
-# Number of tornadoes per month
-freq.month <- data.frame(table(eq.data$year.month))
-year.month.unique <- freq.month[,1]
-neq.month <- freq.month[,2]
-
-# Number of days per month
-day1.month <- ymd(paste(year.month.unique, "01", sep="-"))
-ndays.month <- monthDays(as.Date(day1.month, "%Y-%m-%d"))
-
-# Estimate intensity per day
-lambda <- neq.month / ndays.month
-
-# Cumulative number of days to each month
-median.time <- c()
-ndays.total <- c()
-median.time[1] <- ndays.month[1] / 2
-ndays.total[1] <- ndays.month[1]
-for (i in 2:length(ndays.month)) {
-  median.time[i] <- ndays.total[i-1] + ndays.month[i]/2
-  ndays.total[i] <- ndays.total[i-1] + ndays.month[i]
-}
-median.time <- as.numeric(median.time)
-
-# Polynomial regression
-median.time.re <- median.time / 1000
-median.time.sq <- median.time.re^2
-median.time.cu <- median.time.re^3
-median.time.qd <- median.time.re^4
-median.time.qu <- median.time.re^5
-median.time.sx <- median.time.re^6
-
-model <- lm(lambda ~ median.time.re + median.time.sq + median.time.cu)
-coefs <- coef(model)
-
-# Define estimated lambda function
-lambda.fn <- function(t) {
-  coefs[1] + coefs[2]*(t/1000) + coefs[3]*(t/1000)^2 + 
-    coefs[4]*(t/1000)^3
-}
-
-### Time-rescaling ###
-
-# Create "time in days" since start
+# Time in days since start
 start_time <- min(eq.data$datetime, na.rm = TRUE)
+eq.data$time_in_days <- as.numeric(difftime(eq.data$datetime, start_time, units = "days"))
 
-eq.data$time_in_days <- as.numeric(difftime(eq.data$datetime, start_time, units="days"))
+# Gumbel PDF
+gumbel_pdf <- function(t, mu, beta) {
+  z <- (t - mu) / beta
+  (1 / beta) * exp(-(z + exp(-z)))
+}
 
-# Now rescale each event time by integrating lambda from 0 to t
-# Ensure t is valid before integrating
+# Objective: minimize KS statistic with scaling to observed event count
+objective_fn <- function(params) {
+  mu <- params[1]
+  beta <- params[2]
+
+  # Raw lambda without scaling
+  raw_lambda <- function(t) {
+    gumbel_pdf(t, mu, beta)
+  }
+
+  # Calculate total integral of raw_lambda over observed time
+  total_lambda <- tryCatch(integrate(raw_lambda, 0, max(eq.data$time_in_days))$value,
+                           error = function(e) NA)
+  if (!is.finite(total_lambda) || total_lambda == 0) return(Inf)
+
+  # Scale factor to match expected events with observed number
+  scale_factor <- nrow(eq.data) / total_lambda
+
+  # Scaled lambda function
+  lambda.fn <- function(t) scale_factor * raw_lambda(t)
+
+  # Compute Lambda(t) for each observed time
+  Lambda <- function(t) {
+    sapply(t, function(x) {
+      tryCatch(integrate(lambda.fn, 0, x)$value,
+               error = function(e) NA)
+    })
+  }
+
+  rescaled_times <- Lambda(eq.data$time_in_days)
+  interarrivals <- diff(c(0, rescaled_times))
+
+  # If any non-finite values, return large penalty
+  if (any(!is.finite(interarrivals))) return(Inf)
+
+  # KS test of rescaled interarrival times against Exp(1)
+  ks <- suppressWarnings(ks.test(interarrivals, "pexp", 1))
+  return(ks$statistic)
+}
+
+# Optimize mu and beta (adjust initial guess as needed)
+opt_result <- optim(par = c(40, 10), fn = objective_fn, method = "L-BFGS-B", lower = c(0.01, 0.01))
+mu_opt <- opt_result$par[1]
+beta_opt <- opt_result$par[2]
+cat("Estimated mu:", mu_opt, "\n")
+cat("Estimated beta:", beta_opt, "\n")
+
+# Final scaled lambda function
+raw_lambda <- function(t) gumbel_pdf(t, mu_opt, beta_opt)
+total_lambda <- integrate(raw_lambda, 0, max(eq.data$time_in_days))$value
+scale_factor <- nrow(eq.data) / total_lambda
+lambda.fn <- function(t) scale_factor * raw_lambda(t)
+
+# Rescale times for goodness of fit testing
 rescaled_times <- sapply(eq.data$time_in_days, function(t) {
   if (is.finite(t) && !is.na(t)) {
-    return(integrate(lambda.fn, lower = 0, upper = t)$value)
+    integrate(lambda.fn, 0, t)$value
   } else {
-    return(NA)  # Return NA if t is not valid
+    NA
   }
 })
+rescaled_interarrivals <- diff(c(0, rescaled_times))
 
-
-# Compute rescaled interarrival times
-rescaled_interarrivals <- diff(c(0, rescaled_times))  # Add 0 to start
-
-### KS Goodness of fit via test for Exp(1) ###
-
+# KS test on rescaled interarrival times
 ks_result <- ks.test(rescaled_interarrivals, "pexp", 1)
-
-# Show results
 print(ks_result)
 
-### Construct empirical CDF ###
-elapsed_times <- as.numeric(difftime(eq.data$datetime, start_time, units="days"))
-elapsed_times <- sort(elapsed_times)
+# Empirical CDF of observed times
+elapsed_times <- sort(eq.data$time_in_days)
 n <- length(elapsed_times)
 empirical_cdf <- (1:n)/n
 
-# Construct theoretical CDF
-# Define cumulative intensity function Lambda(t) by integrating lambda(t)
+# Theoretical CDF based on scaled Lambda(t)
 Lambda.fn <- function(t) {
   sapply(t, function(x) {
-    tryCatch({
-      integrate(lambda.fn, 0, x)$value
-    }, error = function(e) {
-      NA  # Return NA if integration fails
-    })
+    tryCatch(integrate(lambda.fn, 0, x)$value,
+             error = function(e) NA)
   })
 }
-
 theoretical_cdf <- Lambda.fn(elapsed_times)
-theoretical_cdf <- theoretical_cdf / max(theoretical_cdf)  # Normalize to [0,1]
+theoretical_cdf <- theoretical_cdf / max(theoretical_cdf, na.rm = TRUE)  # Normalize to 1
 
 # Plot empirical vs theoretical CDF
-plot(elapsed_times, empirical_cdf, type="s", lwd=2, col="black", 
-     xlab="Days since January 1, 2020", ylab="CDF")
-lines(elapsed_times, theoretical_cdf, col="blue", lwd=2)
-legend("bottomright", legend=c("Empirical CDF", "Theoretical CDF"), 
-       col=c("black", "blue"), lwd=2)
+plot(elapsed_times, empirical_cdf, type = "s", lwd = 2, col = "black",
+     xlab = "Days since January 1, 2020", ylab = "CDF")
+lines(elapsed_times, theoretical_cdf, col = "blue", lwd = 2)
+legend("bottomright", legend = c("Empirical CDF", "Theoretical CDF"),
+       col = c("black", "blue"), lwd = 2)
