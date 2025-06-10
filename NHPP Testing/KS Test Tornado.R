@@ -6,7 +6,7 @@ library(lubridate)
 library(readr)
 
 # Load data
-eq.data <- read_csv("tnUS.csv") %>%
+eq.data <- read_csv("tornadoes.csv") %>%
   filter(
     st %in% c("OK", "TX", "KS", "NE"),
     mo %in% 1:12,
