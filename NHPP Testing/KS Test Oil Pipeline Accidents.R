@@ -5,7 +5,7 @@ library(dplyr)
 library(lubridate)
 
 # Load data
-eq.data <- read.csv("/Users/ryanrodrigue/Downloads/database.csv", header=TRUE, sep=",")
+eq.data <- read.csv("oilpipelineaccidents.csv", header=TRUE, sep=",")
 eq.data$datetime <- as.POSIXct(eq.data$Accident.Date.Time, format="%m/%d/%Y %I:%M %p")
 
 # Computing lag
