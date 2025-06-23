@@ -1,7 +1,7 @@
 library(lubridate)
 
 # Load and clean data
-eq.data <- read.csv("/Users/ryanrodrigue/Downloads/wildfireDATA.csv", header=TRUE, sep=",")
+eq.data <- read.csv("wildfires.csv", header=TRUE, sep=",")
 eq.data$DISCOVERY_DATE <- as.Date(eq.data$DISCOVERY_DATE, format="%m/%d/%Y")
 eq.data <- subset(eq.data, FIRE_YEAR == 2018 & STATE == "OR")
 
