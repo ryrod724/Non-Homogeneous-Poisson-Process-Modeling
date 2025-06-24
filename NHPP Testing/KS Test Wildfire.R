@@ -5,7 +5,7 @@ library(dplyr)
 library(lubridate)
 
 # Load and clean data
-eq.data <- read.csv("/Users/ryanrodrigue/Downloads/wildfireDATA.csv", header=TRUE)
+eq.data <- read.csv("wildfires.csv", header=TRUE)
 eq.data$DISCOVERY_DATE <- as.Date(eq.data$DISCOVERY_DATE, format="%m/%d/%Y")
 
 # Filter for 2018 and California
