@@ -1,11 +1,20 @@
+# Load libraries
+library(Hmisc)
+library(gtools)
+library(dplyr)
 library(lubridate)
 
 # Load and clean data
-eq.data <- read.csv("wildfires.csv", header=TRUE, sep=",")
+eq.data <- read.csv("/Users/ryanrodrigue/Downloads/wildfireDATA.csv", header=TRUE)
 eq.data$DISCOVERY_DATE <- as.Date(eq.data$DISCOVERY_DATE, format="%m/%d/%Y")
-eq.data <- subset(eq.data, FIRE_YEAR == 2018 & STATE == "OR")
 
-# Convert time
+# Filter for 2018 and California
+eq.data <- subset(eq.data, FIRE_YEAR == 2018 & STATE == "CA")
+
+# Drop rows with missing or malformed time
+eq.data <- eq.data[grepl("^\\d{4}$", eq.data$DISCOVERY_TIME), ]
+
+# Parse time
 eq.data$DISCOVERY_HOUR <- as.numeric(substr(eq.data$DISCOVERY_TIME, 1, 2))
 eq.data$DISCOVERY_MIN <- as.numeric(substr(eq.data$DISCOVERY_TIME, 3, 4))
 eq.data$datetime <- as.POSIXct(
@@ -13,54 +22,89 @@ eq.data$datetime <- as.POSIXct(
   format="%Y-%m-%d %H:%M:%S"
 )
 
-# Remove first row and compute interarrival time
-eq.data$datetime.lag <- c(0, head(eq.data$datetime, -1))
-eq.data <- eq.data[-1, ]
-eq.data$elapsed.time <- (as.numeric(eq.data$datetime) - as.numeric(eq.data$datetime.lag)) / 3600
-eq.data <- eq.data[eq.data$elapsed.time > 2, ]
+# Sort by datetime
+eq.data <- eq.data[order(eq.data$datetime), ]
 
-# Time in days since first fire
+# Create "time in days" since start
 start_time <- min(eq.data$datetime, na.rm = TRUE)
 eq.data$time_in_days <- as.numeric(difftime(eq.data$datetime, start_time, units="days"))
 
-# Sort and build empirical CDF
-elapsed_times <- sort(eq.data$time_in_days)
-n <- length(elapsed_times)
-empirical_cdf <- (1:n) / n
-cdf_df <- data.frame(
-  t = elapsed_times,
-  cdf = empirical_cdf
-)
+# Construct cumulative counts for fitting
+cum_counts <- seq_along(eq.data$time_in_days)
+time_days <- eq.data$time_in_days
 
-# Fit logistic CDF via nls
-logistic_model <- nls(
-  cdf ~ 1 / (1 + exp(-a * (t - b))),
-  data = cdf_df,
-  start = list(a = 0.04, b = 180),
-  control = nls.control(maxiter = 500, warnOnly = TRUE)
-)
+# Load minpack.lm for robust nonlinear fitting
+if(!require(minpack.lm)) install.packages("minpack.lm")
+library(minpack.lm)
 
-# Extract fitted parameters
-coefs <- coef(logistic_model)
-a_fit <- coefs["a"]
-b_fit <- coefs["b"]
-cat(sprintf("Fitted logistic parameters: a = %.4f, b = %.2f\n", a_fit, b_fit))
-
-# Define fitted CDF
-Lambda.fn <- function(t) {
-  1 / (1 + exp(-a_fit * (t - b_fit)))
+# 3-parameter logistic function
+logistic_cdf <- function(t, L, k, x0) {
+  L / (1 + exp(-k * (t - x0)))
 }
 
-# Evaluate theoretical CDF at same time points
-theoretical_cdf <- Lambda.fn(elapsed_times)
+# Starting parameter guesses
+start_logistic <- list(
+  L = max(cum_counts) * 1.1,
+  k = 0.1,
+  x0 = median(time_days)
+)
 
-# Kolmogorov-Smirnov test between empirical and theoretical CDFs
-ks_result <- ks.test(empirical_cdf, theoretical_cdf)
+# Fit the logistic curve
+logistic_fit <- nlsLM(
+  cum_counts ~ logistic_cdf(time_days, L, k, x0),
+  start = start_logistic,
+  control = nls.lm.control(maxiter = 1000, ftol = 1e-10)
+)
+
+# Extract parameters
+params_logistic <- coef(logistic_fit)
+print(params_logistic)
+
+# Define cumulative intensity function Lambda(t)
+Lambda.fn <- function(t) {
+  params_logistic["L"] / (1 + exp(-params_logistic["k"] * (t - params_logistic["x0"])))
+}
+
+# Derivative (intensity function lambda(t))
+lambda.fn <- function(t) {
+  L <- params_logistic["L"]
+  k <- params_logistic["k"]
+  x0 <- params_logistic["x0"]
+  exp_term <- exp(-k * (t - x0))
+  (L * k * exp_term) / (1 + exp_term)^2
+}
+
+# Compute rescaled times using Lambda(t)
+rescaled_times <- Lambda.fn(time_days)
+
+# Compute rescaled interarrival times
+rescaled_interarrivals <- diff(c(0, rescaled_times))
+
+# Add tiny jitter to avoid ties in KS test
+set.seed(123)
+rescaled_interarrivals_jittered <- rescaled_interarrivals + runif(length(rescaled_interarrivals), 0, 1e-10)
+
+# Perform KS test against Exp(1)
+ks_result <- ks.test(rescaled_interarrivals_jittered, "pexp", 1)
 print(ks_result)
 
-# Plot
-plot(elapsed_times, empirical_cdf, type="s", lwd=2, col="black",
-     xlab="Days since Jan 1, 2018", ylab="CDF")
-lines(elapsed_times, theoretical_cdf, col="blue", lwd=2)
-legend("bottomright", legend=c("Empirical CDF", "Fitted Logistic CDF"), 
-       col=c("black", "blue"), lwd=2)
+# Empirical CDF of elapsed times
+elapsed_times <- sort(time_days)
+n <- length(elapsed_times)
+empirical_cdf <- (1:n) / n
+
+# Theoretical CDF normalized to [0,1]
+theoretical_cdf <- Lambda.fn(elapsed_times) / params_logistic["L"]
+
+# Plot empirical vs theoretical CDF
+plot(elapsed_times, empirical_cdf, type = "s", lwd = 2, col = "black",
+     xlab = "Days since January 1, 2018", ylab = "CDF",
+     main = "Empirical vs Theoretical CDF")
+lines(elapsed_times, theoretical_cdf, col = "blue", lwd = 2)
+legend("bottomright", legend = c("Empirical CDF", "Theoretical CDF"),
+       col = c("black", "blue"), lwd = 2)
+       
+#Important results
+nrow(eq.data)
+lambda.fn
+Lambda.fn
